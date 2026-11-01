@@ -1,68 +1,18 @@
-import "dotenv/config";
-import cors from "cors";
-import express, { type ErrorRequestHandler } from "express";
+import express, { type Express } from "express";
 
-const port = Number(process.env.PORT ?? 3001);
-if (!Number.isInteger(port) || port < 1 || port > 65535) {
-  throw new Error("PORT must be an integer between 1 and 65535.");
-}
+const app: Express = express();
 
-const app = express();
-const frontendOrigin = process.env.FRONTEND_ORIGIN ?? "http://localhost:5173";
-const startedAt = Date.now();
+const PORT: number = Number(process.env.PORT) || 3001;
 
-app.use(cors({ origin: frontendOrigin }));
-app.use(express.json({ limit: "1mb" }));
+// Middleware
+app.use(express.json());
 
-const sendServiceStatus: express.RequestHandler = (_request, response) => {
-  response.json({
-    data: {
-      status: "degraded",
-      message: "API server is running, but the database is not configured.",
-      server: {
-        status: "running",
-        port,
-        uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
-      },
-      database: {
-        status: "not_configured",
-        message: "No database connection is configured.",
-      },
-    },
-  });
-};
-
-app.get("/", sendServiceStatus);
-app.get("/api/health", sendServiceStatus);
-
-app.use((_request, response) => {
-  response.status(404).json({
-    error: { code: "NOT_FOUND", message: "The requested endpoint was not found." },
-  });
+// Routes
+app.get("/", (_req, res) => {
+  res.status(200).send("Express server is running 🚀");
 });
 
-const errorHandler: ErrorRequestHandler = (error, _request, response, _next) => {
-  if (
-    error instanceof SyntaxError
-    && typeof error === "object"
-    && error !== null
-    && "type" in error
-    && error.type === "entity.parse.failed"
-  ) {
-    response.status(400).json({
-      error: { code: "INVALID_JSON", message: "The request body must contain valid JSON." },
-    });
-    return;
-  }
-
-  console.error("Unhandled server error:", error);
-  response.status(500).json({
-    error: { code: "INTERNAL_SERVER_ERROR", message: "An unexpected server error occurred." },
-  });
-};
-
-app.use(errorHandler);
-
-app.listen(port, () => {
-  console.log(`Ayra Hospital API listening on port ${port}`);
+// Start server
+app.listen(PORT, () => {
+  console.log(`Server listening on port ${PORT}`);
 });
