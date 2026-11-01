@@ -9,13 +9,31 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
 
 const app = express();
 const frontendOrigin = process.env.FRONTEND_ORIGIN ?? "http://localhost:5173";
+const startedAt = Date.now();
 
 app.use(cors({ origin: frontendOrigin }));
 app.use(express.json({ limit: "1mb" }));
 
-app.get("/api/health", (_request, response) => {
-  response.json({ data: { status: "ok" } });
-});
+const sendServiceStatus: express.RequestHandler = (_request, response) => {
+  response.json({
+    data: {
+      status: "degraded",
+      message: "API server is running, but the database is not configured.",
+      server: {
+        status: "running",
+        port,
+        uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
+      },
+      database: {
+        status: "not_configured",
+        message: "No database connection is configured.",
+      },
+    },
+  });
+};
+
+app.get("/", sendServiceStatus);
+app.get("/api/health", sendServiceStatus);
 
 app.use((_request, response) => {
   response.status(404).json({
