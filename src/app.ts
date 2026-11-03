@@ -1,6 +1,6 @@
 import express, { type Express } from "express";
 import cors from "cors";
-import { default as helmet } from "helmet";
+import * as helmet from "helmet";
 import type { ErrorRequestHandler } from "express";
 import { env } from "./config/env.js";
 import { pool } from "./config/database.js";
@@ -10,7 +10,7 @@ import adminRoutes from "./routes/admin.route.js";
 const app: Express = express();
 
 // Security middleware
-app.use(helmet());
+app.use(helmet.default());
 
 // CORS configuration
 app.use(
