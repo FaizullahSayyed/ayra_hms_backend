@@ -1,6 +1,6 @@
 import express, { type Express } from "express";
 import cors from "cors";
-import helmet from "helmet";
+import { default as helmet } from "helmet";
 import type { ErrorRequestHandler } from "express";
 import { env } from "./config/env.js";
 import { pool } from "./config/database.js";
