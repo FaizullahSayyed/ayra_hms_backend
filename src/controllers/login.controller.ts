@@ -2,14 +2,11 @@ import { randomBytes } from "node:crypto";
 import type { RequestHandler } from "express";
 import { env } from "../config/env.js";
 import { pool } from "../config/database.js";
-import { CSRF_HEADER_NAME, SESSION_COOKIE_NAME } from "../middlewares/session.middleware.js";
+import { AUTH_COOKIE_NAME, CSRF_HEADER_NAME } from "../middlewares/session.middleware.js";
 import { USER_ROLES, type UserRole } from "../types/auth.js";
 import { comparePassword, hashPassword } from "../utils/password.js";
+import { generateAccessToken } from "../utils/jwt.js";
 import { loginSchema } from "../validators/auth.validator.js";
-import {
-  sessionService,
-  type SessionService,
-} from "../services/session.service.js";
 
 interface LoginUser {
   id: string;
@@ -30,18 +27,17 @@ interface LoginDatabase {
 interface SessionCookieSettings {
   secure: boolean;
   sameSite: "lax" | "strict" | "none";
-  ttlDays: number;
 }
 
 interface LoginHandlerDependencies {
   database: LoginDatabase;
-  sessions: SessionService;
   verifyPassword: typeof comparePassword;
   dummyPasswordHash: Promise<string>;
+  generateToken: typeof generateAccessToken;
   cookieSettings: SessionCookieSettings;
 }
 
-type LoginOperation = "user lookup" | "session creation";
+const AUTH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 const loginDatabase: LoginDatabase = {
   query: (sql, values) => pool.query<LoginUser>(sql, values),
@@ -51,13 +47,12 @@ const dummyPasswordHash = hashPassword(randomBytes(32).toString("base64url"));
 
 const defaultDependencies: LoginHandlerDependencies = {
   database: loginDatabase,
-  sessions: sessionService,
   verifyPassword: comparePassword,
   dummyPasswordHash,
+  generateToken: generateAccessToken,
   cookieSettings: {
     secure: env.SESSION_COOKIE_SECURE,
     sameSite: env.SESSION_COOKIE_SAME_SITE,
-    ttlDays: env.SESSION_TTL_DAYS,
   },
 };
 
@@ -90,7 +85,7 @@ export function createLoginHandler(
       return;
     }
 
-    let operation: LoginOperation = "user lookup";
+    let operation = "user lookup";
     try {
       const { email, password } = validation.data;
       const result = await dependencies.database.query(
@@ -116,20 +111,25 @@ export function createLoginHandler(
         throw new Error("User record contains an unsupported role.");
       }
 
-      operation = "session creation";
-      const credentials = await dependencies.sessions.create(user.id);
+      operation = "token creation";
+      const csrfToken = randomBytes(32).toString("base64url");
+      const token = dependencies.generateToken({
+        userId: user.id,
+        role: user.role,
+        csrfToken,
+      });
       const cookieAttributes = {
         secure: dependencies.cookieSettings.secure,
         sameSite: dependencies.cookieSettings.sameSite,
-        path: "/api/v1/auth",
-        maxAge: dependencies.cookieSettings.ttlDays * 24 * 60 * 60 * 1000,
+        path: "/api/v1",
+        maxAge: AUTH_TOKEN_TTL_MS,
       } as const;
 
-      response.cookie(SESSION_COOKIE_NAME, credentials.sessionId, {
+      response.cookie(AUTH_COOKIE_NAME, token, {
         ...cookieAttributes,
         httpOnly: true,
       });
-      response.setHeader(CSRF_HEADER_NAME, credentials.csrfToken);
+      response.setHeader(CSRF_HEADER_NAME, csrfToken);
 
       response.status(200).json({
         success: true,
@@ -164,40 +164,28 @@ export function createLoginHandler(
 }
 
 export function createLogoutHandler(
-  sessions: SessionService = sessionService,
   cookieSettings: Pick<SessionCookieSettings, "secure" | "sameSite"> = {
     secure: env.SESSION_COOKIE_SECURE,
     sameSite: env.SESSION_COOKIE_SAME_SITE,
   },
 ): RequestHandler {
-  return async (_request, response): Promise<void> => {
-    const session = response.locals.authenticatedSession as
-      | { sessionId: string }
-      | undefined;
-    if (!session) {
+  return (_request, response): void => {
+    const user = response.locals.authenticatedUser;
+    if (!user) {
       response.status(401).json({ success: false, message: "Authentication required." });
       return;
     }
 
-    try {
-      await sessions.revoke(session.sessionId);
-      const cookieAttributes = {
-        secure: cookieSettings.secure,
-        sameSite: cookieSettings.sameSite,
-        path: "/api/v1/auth",
-      } as const;
-      response.clearCookie(SESSION_COOKIE_NAME, {
-        ...cookieAttributes,
-        httpOnly: true,
-      });
-      response.status(200).json({ success: true, message: "Signed out successfully." });
-    } catch {
-      console.error("Logout failed because the session service is unavailable.");
-      response.status(503).json({
-        success: false,
-        message: "Unable to sign out right now. Please try again.",
-      });
-    }
+    const cookieAttributes = {
+      secure: cookieSettings.secure,
+      sameSite: cookieSettings.sameSite,
+      path: "/api/v1",
+    } as const;
+    response.clearCookie(AUTH_COOKIE_NAME, {
+      ...cookieAttributes,
+      httpOnly: true,
+    });
+    response.status(200).json({ success: true, message: "Signed out successfully." });
   };
 }
 

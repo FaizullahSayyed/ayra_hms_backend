@@ -6,16 +6,20 @@ import express, { type RequestHandler } from "express";
 import { comparePassword } from "../src/utils/password.js";
 import {
   createRegisterHandler,
-  type RegistrationDatabase,
 } from "../src/controllers/auth.controller.js";
 import { createAuthRouter } from "../src/routes/auth.route.js";
 import { USER_ROLES } from "../src/types/auth.js";
 import { registerSchema } from "../src/validators/auth.validator.js";
+import type { UserCreationDatabase } from "../src/services/user.service.js";
 
 const requestBody = {
-  name: "  Aanya Patel  ",
+  username: "  Aanya.Patel  ",
   email: " Aanya@Example.Test ",
+  firstName: "  Aanya ",
+  lastName: " Patel  ",
   password: "a secure password",
+  phone: " +1 (555) 010-0200 ",
+  gender: "female",
   role: "patient",
 };
 
@@ -29,7 +33,6 @@ interface ApiResponse {
     name: string;
     email: string;
     role: string;
-    created_at: string;
   };
 }
 
@@ -73,19 +76,18 @@ async function postRegistration(url: string, body: unknown): Promise<{
 }
 
 function createSuccessfulDatabase(
-  onQuery: (values: [string, string, string, (typeof USER_ROLES)[number]]) => void,
-): RegistrationDatabase {
+  onQuery: (values: (string | null)[]) => void,
+): UserCreationDatabase {
   return {
-    query: async (_sql, values) => {
+    query: async <T>(_sql: string, values: (string | null)[] = []) => {
       onQuery(values);
       return {
         rows: [{
           id: "user-123",
-          name: values[0],
-          email: values[1],
-          role: values[3],
-          created_at: "2026-11-01T00:00:00.000Z",
-        }],
+          name: values[1],
+          email: values[4],
+          role: values[6],
+        } as T],
       };
     },
   };
@@ -108,8 +110,21 @@ test("registration schema accepts every supported role", () => {
   }
 });
 
+test("registration defaults role to patient and normalizes account fields", () => {
+  const { role: _role, ...bodyWithoutRole } = requestBody;
+  const result = registerSchema.safeParse(bodyWithoutRole);
+  assert.equal(result.success, true);
+  if (!result.success) return;
+  assert.equal(result.data.role, "patient");
+  assert.equal(result.data.username, "aanya.patel");
+  assert.equal(result.data.email, "aanya@example.test");
+  assert.equal(result.data.firstName, "Aanya");
+  assert.equal(result.data.lastName, "Patel");
+  assert.equal(result.data.phone, "+1 (555) 010-0200");
+});
+
 test("patient registration persists and returns the normalized patient role", async () => {
-  let insertedValues: [string, string, string, (typeof USER_ROLES)[number]] | undefined;
+  let insertedValues: (string | null)[] | undefined;
   const database = createSuccessfulDatabase((values) => {
     insertedValues = values;
   });
@@ -119,7 +134,7 @@ test("patient registration persists and returns the normalized patient role", as
 
     assert.equal(response.status, 201);
     assert.equal(response.body.success, true);
-    assert.equal(response.body.message, "Patient registered successfully");
+    assert.equal(response.body.message, "Registration successful.");
     assert.deepEqual(
       {
         id: response.body.user?.id,
@@ -134,22 +149,28 @@ test("patient registration persists and returns the normalized patient role", as
         role: "patient",
       },
     );
-    assert.equal(insertedValues?.[0], "Aanya Patel");
-    assert.equal(insertedValues?.[1], "aanya@example.test");
-    assert.equal(insertedValues?.[3], "patient");
-    assert.ok(insertedValues?.[2]);
-    assert.notEqual(insertedValues?.[2], requestBody.password);
-    assert.equal(await comparePassword(requestBody.password, insertedValues![2]), true);
+    assert.equal(insertedValues?.[0], "aanya.patel");
+    assert.equal(insertedValues?.[1], "Aanya Patel");
+    assert.equal(insertedValues?.[2], "Aanya");
+    assert.equal(insertedValues?.[3], "Patel");
+    assert.equal(insertedValues?.[4], "aanya@example.test");
+    assert.equal(insertedValues?.[6], "patient");
+    assert.equal(insertedValues?.[7], "+1 (555) 010-0200");
+    assert.equal(insertedValues?.[8], "female");
+    assert.ok(insertedValues?.[5]);
+    assert.notEqual(insertedValues?.[5], requestBody.password);
+    assert.equal(await comparePassword(requestBody.password, insertedValues![5]!), true);
     assert.equal("password_hash" in (response.body.user ?? {}), false);
+    assert.equal(JSON.stringify(response.body).includes(requestBody.password), false);
   });
 });
 
 test("unknown roles return a consistent validation error", async () => {
   let databaseCalled = false;
-  const database: RegistrationDatabase = {
-    query: async () => {
+  const database: UserCreationDatabase = {
+    query: async <T>() => {
       databaseCalled = true;
-      return { rows: [] };
+      return { rows: [] as T[] };
     },
   };
 
@@ -166,10 +187,10 @@ test("unknown roles return a consistent validation error", async () => {
 test("all staff roles are forbidden for public self-registration", async () => {
   let databaseCalled = false;
   let passwordHashCalled = false;
-  const database: RegistrationDatabase = {
-    query: async () => {
+  const database: UserCreationDatabase = {
+    query: async <T>() => {
       databaseCalled = true;
-      return { rows: [] };
+      return { rows: [] as T[] };
     },
   };
   const handler = createRegisterHandler(database, async () => {
@@ -196,13 +217,13 @@ test("invalid fields return validation errors", async () => {
     async (url) => {
       const response = await postRegistration(url, {
         ...requestBody,
-        name: " ",
+        firstName: " ",
         email: "not-an-email",
         password: "short",
       });
       assert.equal(response.status, 400);
       assert.equal(response.body.message, "Validation failed");
-      assert.ok(response.body.errors?.name);
+      assert.ok(response.body.errors?.firstName);
       assert.ok(response.body.errors?.email);
       assert.ok(response.body.errors?.password);
     },
@@ -210,8 +231,8 @@ test("invalid fields return validation errors", async () => {
 });
 
 test("duplicate email returns conflict without success-shaped data", async () => {
-  const database: RegistrationDatabase = {
-    query: async () => {
+  const database: UserCreationDatabase = {
+    query: async <T>() => {
       throw Object.assign(new Error("duplicate email"), { code: "23505" });
     },
   };
@@ -220,14 +241,14 @@ test("duplicate email returns conflict without success-shaped data", async () =>
     const response = await postRegistration(url, requestBody);
     assert.equal(response.status, 409);
     assert.equal(response.body.success, false);
-    assert.equal(response.body.message, "Email is already registered");
+    assert.equal(response.body.message, "Username or email is already in use.");
     assert.equal(response.body.user, undefined);
   });
 });
 
 test("database failures return an explicit server error", async () => {
-  const database: RegistrationDatabase = {
-    query: async () => {
+  const database: UserCreationDatabase = {
+    query: async <T>() => {
       throw new Error("database unavailable");
     },
   };
@@ -236,7 +257,7 @@ test("database failures return an explicit server error", async () => {
     const response = await postRegistration(url, requestBody);
     assert.equal(response.status, 500);
     assert.equal(response.body.success, false);
-    assert.equal(response.body.message, "Unable to register patient");
+    assert.equal(response.body.message, "Unable to register account.");
     assert.equal(response.body.user, undefined);
   });
 });

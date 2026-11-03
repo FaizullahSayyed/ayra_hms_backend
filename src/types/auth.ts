@@ -8,3 +8,11 @@ export const USER_ROLES = [
 ] as const;
 
 export type UserRole = (typeof USER_ROLES)[number];
+
+export interface AuthenticatedUser {
+  id: string;
+  name: string;
+  email: string;
+  role: UserRole;
+  csrfToken: string;
+}

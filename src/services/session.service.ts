@@ -1,7 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { QueryResultRow } from "pg";
 import { pool } from "../config/database.js";
-import { env } from "../config/env.js";
 import type { UserRole } from "../types/auth.js";
 
 export interface AuthenticatedSession {
@@ -48,7 +47,7 @@ export function hashOpaqueValue(value: string): string {
 export class PostgresSessionService implements SessionService {
   constructor(
     private readonly database: SessionDatabase = sessionDatabase,
-    private readonly ttlDays = 7,
+    private readonly ttlDays = 30,
   ) {}
 
   async create(userId: string): Promise<SessionCredentials> {
@@ -117,7 +116,4 @@ export class PostgresSessionService implements SessionService {
   }
 }
 
-export const sessionService = new PostgresSessionService(
-  sessionDatabase,
-  env.SESSION_TTL_DAYS,
-);
+export const sessionService = new PostgresSessionService(sessionDatabase);

@@ -10,16 +10,11 @@ import {
 import { createCurrentUserHandler } from "../src/controllers/current-user.controller.js";
 import {
   CSRF_HEADER_NAME,
-  SESSION_COOKIE_NAME,
+  AUTH_COOKIE_NAME,
 } from "../src/middlewares/session.middleware.js";
 import { createAuthRouter } from "../src/routes/auth.route.js";
-import {
-  hashOpaqueValue,
-  PostgresSessionService,
-  type SessionCredentials,
-  type SessionDatabase,
-  type SessionService,
-} from "../src/services/session.service.js";
+import { generateAccessToken, verifyAccessToken } from "../src/utils/jwt.js";
+import type { UserRole } from "../src/types/auth.js";
 
 const allowedOrigin = "https://ayra-hms-frontend.vercel.app";
 const loginRequest = {
@@ -38,7 +33,7 @@ interface LoginUser {
   id: string;
   name: string;
   email: string;
-  role: "patient" | "biller" | "receptionist" | "nurse" | "doctor" | "admin";
+  role: UserRole;
   password_hash: string;
   is_active: boolean;
 }
@@ -49,14 +44,24 @@ interface LoginDatabase {
 
 interface LoginDependencies {
   database: LoginDatabase;
-  sessions: SessionService;
   verifyPassword: (password: string, hash: string) => Promise<boolean>;
   dummyPasswordHash: Promise<string>;
+  generateToken: typeof generateAccessToken;
   cookieSettings: {
     secure: boolean;
     sameSite: "lax" | "strict" | "none";
-    ttlDays: number;
   };
+}
+
+interface AuthenticationUser {
+  id: string;
+  name: string;
+  email: string;
+  role: UserRole;
+}
+
+interface AuthenticationDatabase {
+  query(sql: string, values: string[]): Promise<{ rows: AuthenticationUser[] }>;
 }
 
 function createLoginUser(overrides: Partial<LoginUser> = {}): LoginUser {
@@ -71,20 +76,6 @@ function createLoginUser(overrides: Partial<LoginUser> = {}): LoginUser {
   };
 }
 
-function createSessions(overrides: Partial<SessionService> = {}): SessionService {
-  return {
-    create: async () => ({
-      sessionId: "S".repeat(43),
-      csrfToken: "C".repeat(43),
-    }),
-    authenticate: async () => null,
-    refreshCsrf: async () => "C".repeat(43),
-    validateCsrf: async () => false,
-    revoke: async () => undefined,
-    ...overrides,
-  };
-}
-
 function createLoginHandlerWith(
   overrides: Partial<LoginDependencies> = {},
 ): RequestHandler {
@@ -92,11 +83,11 @@ function createLoginHandlerWith(
     database: {
       query: async () => ({ rows: [createLoginUser()] }),
     },
-    sessions: createSessions(),
     verifyPassword: async (password, hash) =>
       password === loginRequest.password && hash === "stored-bcrypt-hash",
     dummyPasswordHash: Promise.resolve("dummy-bcrypt-hash"),
-    cookieSettings: { secure: true, sameSite: "none", ttlDays: 7 },
+    generateToken: generateAccessToken,
+    cookieSettings: { secure: true, sameSite: "none" },
     ...overrides,
   };
 
@@ -159,13 +150,6 @@ async function postJson(
 
 test("login returns safe user data and secure server-managed cookies", async () => {
   let queriedEmail = "";
-  let createdUserId = "";
-  const sessions = createSessions({
-    create: async (userId) => {
-      createdUserId = userId;
-      return { sessionId: "S".repeat(43), csrfToken: "C".repeat(43) };
-    },
-  });
   const handler = createLoginHandlerWith({
     database: {
       query: async (_sql, values) => {
@@ -175,7 +159,6 @@ test("login returns safe user data and secure server-managed cookies", async () 
         };
       },
     },
-    sessions,
     verifyPassword: async (_password, hash) => hash === "stored-bcrypt-hash",
   });
 
@@ -192,22 +175,28 @@ test("login returns safe user data and secure server-managed cookies", async () 
       },
     });
     assert.equal(queriedEmail, "aanya@example.test");
-    assert.equal(createdUserId, "user-123");
     assert.equal(JSON.stringify(response.body).includes("token"), false);
     assert.equal(JSON.stringify(response.body).includes("password"), false);
 
-    const sessionCookie = response.setCookies.find((cookie) =>
-      cookie.startsWith(`${SESSION_COOKIE_NAME}=`)
+    const tokenCookie = response.setCookies.find((cookie) =>
+      cookie.startsWith(`${AUTH_COOKIE_NAME}=`)
     );
-    assert.ok(sessionCookie);
-    assert.ok(sessionCookie.includes("HttpOnly"));
-    assert.ok(sessionCookie.includes("Secure"));
-    assert.ok(sessionCookie.includes("SameSite=None"));
-    assert.ok(sessionCookie.includes("Path=/api/v1/auth"));
-    assert.equal(sessionCookie.includes("S".repeat(43)), true);
+    assert.ok(tokenCookie);
+    assert.ok(tokenCookie.includes("HttpOnly"));
+    assert.ok(tokenCookie.includes("Secure"));
+    assert.ok(tokenCookie.includes("SameSite=None"));
+    assert.ok(tokenCookie.includes("Path=/api/v1"));
+    assert.ok(tokenCookie.includes("Max-Age=2592000"));
+    const token = decodeURIComponent(tokenCookie.split(";")[0].split("=")[1]);
+    const payload = verifyAccessToken(token);
+    assert.equal(payload.userId, "user-123");
+    assert.equal(payload.role, "doctor");
+    assert.match(payload.csrfToken, /^[A-Za-z0-9_-]{43}$/);
     assert.equal(response.setCookies.length, 1);
-    assert.equal(response.csrfToken, "C".repeat(43));
-    assert.equal(JSON.stringify(response.body).includes("C".repeat(43)), false);
+    assert.equal(response.csrfToken, payload.csrfToken);
+    assert.equal(JSON.stringify(response.body).includes(payload.csrfToken), false);
+    const tokenParts = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString());
+    assert.equal(tokenParts.exp - tokenParts.iat, 30 * 24 * 60 * 60);
   });
 });
 
@@ -294,7 +283,7 @@ test("login rejects untrusted or missing origins", async () => {
   });
 });
 
-test("database and session failures never create a successful login response", async () => {
+test("database and token failures never create a successful login response", async () => {
   const failureCases: LoginDependencies[] = [
     {
       database: {
@@ -302,21 +291,17 @@ test("database and session failures never create a successful login response", a
           throw new Error("database failure");
         },
       },
-      sessions: createSessions(),
+      generateToken: generateAccessToken,
       verifyPassword: async () => true,
       dummyPasswordHash: Promise.resolve("dummy-bcrypt-hash"),
-      cookieSettings: { secure: true, sameSite: "none", ttlDays: 7 },
+      cookieSettings: { secure: true, sameSite: "none" },
     },
     {
       database: { query: async () => ({ rows: [createLoginUser()] }) },
-      sessions: createSessions({
-        create: async () => {
-          throw new Error("session storage failure");
-        },
-      }),
+      generateToken: () => { throw new Error("token signing failure"); },
       verifyPassword: async () => true,
       dummyPasswordHash: Promise.resolve("dummy-bcrypt-hash"),
-      cookieSettings: { secure: true, sameSite: "none", ttlDays: 7 },
+      cookieSettings: { secure: true, sameSite: "none" },
     },
   ];
 
@@ -339,11 +324,8 @@ test("missing authentication tables return a migration setup hint", async () => 
     code: "42P01",
   });
   const handler = createLoginHandlerWith({
-    sessions: createSessions({
-      create: async () => {
-        throw missingTableError;
-      },
-    }),
+    database: { query: async () => { throw missingTableError; } },
+    verifyPassword: async () => true,
   });
 
   await withAuthServer({ loginHandler: handler }, async (baseUrl) => {
@@ -358,27 +340,34 @@ test("missing authentication tables return a migration setup hint", async () => 
   });
 });
 
-test("current-user endpoint restores a database-verified role and a fresh CSRF token", async () => {
+test("current-user endpoint verifies the JWT cookie and returns its CSRF token", async () => {
   const csrfToken = "T".repeat(43);
-  const sessions = createSessions({
-    authenticate: async (sessionId) => ({
-      id: "user-123",
-      name: "Aanya Patel",
-      email: "aanya@example.test",
-      role: "doctor",
-      sessionId,
-    }),
-    refreshCsrf: async () => csrfToken,
-  });
+  const authenticationDatabase: AuthenticationDatabase = {
+    query: async (_sql, values) => {
+      assert.deepEqual(values, ["user-123"]);
+      return {
+        rows: [{
+          id: "user-123",
+          name: "Aanya Patel",
+          email: "aanya@example.test",
+          role: "doctor",
+        }],
+      };
+    },
+  };
 
   await withAuthServer({
-    sessions,
-    currentUserHandler: createCurrentUserHandler(sessions),
+    authenticationDatabase,
+    currentUserHandler: createCurrentUserHandler(),
   }, async (baseUrl) => {
     const response = await fetch(`${baseUrl}/me`, {
       headers: {
         Origin: allowedOrigin,
-        Cookie: `${SESSION_COOKIE_NAME}=${"S".repeat(43)}`,
+        Cookie: `${AUTH_COOKIE_NAME}=${generateAccessToken({
+          userId: "user-123",
+          role: "patient",
+          csrfToken,
+        })}`,
       },
     });
     assert.equal(response.status, 200);
@@ -395,83 +384,83 @@ test("current-user endpoint restores a database-verified role and a fresh CSRF t
   });
 });
 
-test("logout requires a matching CSRF cookie/header and revokes the session", async () => {
-  const credentials: SessionCredentials = {
-    sessionId: "session-cookie-value",
-    csrfToken: "C".repeat(43),
+test("invalid JWT cookies are rejected before user lookup", async () => {
+  let queries = 0;
+  const authenticationDatabase: AuthenticationDatabase = {
+    query: async () => {
+      queries += 1;
+      return { rows: [] };
+    },
   };
-  const calls: string[] = [];
-  const sessions = createSessions({
-    authenticate: async (sessionId) => {
-      assert.equal(sessionId, credentials.sessionId);
-      return {
+
+  await withAuthServer({ authenticationDatabase }, async (baseUrl) => {
+    for (const cookie of [undefined, `${AUTH_COOKIE_NAME}=not-a-jwt`]) {
+      const response = await fetch(`${baseUrl}/me`, {
+        headers: {
+          Origin: allowedOrigin,
+          ...(cookie ? { Cookie: cookie } : {}),
+        },
+      });
+      assert.equal(response.status, 401);
+    }
+    assert.equal(queries, 0);
+  });
+});
+
+test("JWTs for inactive or missing users are rejected", async () => {
+  const authenticationDatabase: AuthenticationDatabase = {
+    query: async () => ({ rows: [] }),
+  };
+
+  await withAuthServer({ authenticationDatabase }, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/me`, {
+      headers: {
+        Origin: allowedOrigin,
+        Cookie: `${AUTH_COOKIE_NAME}=${generateAccessToken({
+          userId: "disabled-user",
+          role: "patient",
+          csrfToken: "C".repeat(43),
+        })}`,
+      },
+    });
+    assert.equal(response.status, 401);
+  });
+});
+
+test("logout requires a matching CSRF token and clears the JWT cookie", async () => {
+  const csrfToken = "C".repeat(43);
+  const authenticationDatabase: AuthenticationDatabase = {
+    query: async () => ({
+      rows: [{
         id: "user-123",
         name: "Aanya Patel",
         email: "aanya@example.test",
         role: "patient",
-        sessionId,
-      };
-    },
-    validateCsrf: async (sessionId, csrfToken) => {
-      calls.push("csrf");
-      return sessionId === credentials.sessionId && csrfToken === credentials.csrfToken;
-    },
-    revoke: async (sessionId) => {
-      assert.equal(sessionId, credentials.sessionId);
-      calls.push("revoke");
-    },
-  });
-  const logoutHandler = createLogoutHandler(sessions, { secure: true, sameSite: "none" });
+      }],
+    }),
+  };
+  const logoutHandler = createLogoutHandler({ secure: true, sameSite: "none" });
   const wrongCsrfToken = "A".repeat(43);
 
-  await withAuthServer({ sessions, logoutHandler }, async (baseUrl) => {
+  await withAuthServer({ authenticationDatabase, logoutHandler }, async (baseUrl) => {
+    const tokenCookie = `${AUTH_COOKIE_NAME}=${generateAccessToken({
+      userId: "user-123",
+      role: "patient",
+      csrfToken,
+    })}`;
     const denied = await postJson(`${baseUrl}/logout`, {}, {
-      Cookie: `${SESSION_COOKIE_NAME}=${credentials.sessionId}`,
+      Cookie: tokenCookie,
       [CSRF_HEADER_NAME]: wrongCsrfToken,
     });
     assert.equal(denied.status, 403);
-    assert.deepEqual(calls, ["csrf"]);
 
     const accepted = await postJson(`${baseUrl}/logout`, {}, {
-      Cookie: `${SESSION_COOKIE_NAME}=${credentials.sessionId}`,
-      [CSRF_HEADER_NAME]: credentials.csrfToken,
+      Cookie: tokenCookie,
+      [CSRF_HEADER_NAME]: csrfToken,
     });
     assert.equal(accepted.status, 200);
-    assert.deepEqual(calls, ["csrf", "csrf", "revoke"]);
     assert.ok(accepted.setCookies.some((cookie) =>
-      cookie.startsWith(`${SESSION_COOKIE_NAME}=`) && cookie.includes("Expires=Thu, 01 Jan 1970")
+      cookie.startsWith(`${AUTH_COOKIE_NAME}=`) && cookie.includes("Expires=Thu, 01 Jan 1970")
     ));
   });
-});
-
-test("session service stores only one-way hashes and revokes the hashed ID", async () => {
-  const captured: Array<{ sql: string; values: unknown[] }> = [];
-  const database: SessionDatabase = {
-    query: async <T extends import("pg").QueryResultRow>(
-      sql: string,
-      values: (string | number)[] = [],
-    ) => {
-      captured.push({ sql, values });
-      return { rows: [{ session_hash: "stored-hash" }] as T[] };
-    },
-  };
-  const sessions = new PostgresSessionService(database, 3);
-
-  const credentials = await sessions.create("user-123");
-  assert.notEqual(credentials.sessionId, credentials.csrfToken);
-  assert.ok(credentials.sessionId.length >= 40);
-  assert.equal(captured[0].values[0], hashOpaqueValue(credentials.sessionId));
-  assert.equal(captured[0].values[1], hashOpaqueValue(credentials.csrfToken));
-  assert.equal(captured[0].values.includes(credentials.sessionId), false);
-  assert.equal(captured[0].values.includes(credentials.csrfToken), false);
-
-  await sessions.revoke(credentials.sessionId);
-  assert.equal(captured[1].values[0], hashOpaqueValue(credentials.sessionId));
-  assert.match(captured[1].sql, /revoked_at = NOW\(\)/);
-
-  const freshCsrf = await sessions.refreshCsrf(credentials.sessionId);
-  assert.ok(freshCsrf);
-  assert.equal(captured[2].values[0], hashOpaqueValue(credentials.sessionId));
-  assert.equal(captured[2].values[1], hashOpaqueValue(freshCsrf));
-  assert.equal(captured[2].values.includes(freshCsrf), false);
 });

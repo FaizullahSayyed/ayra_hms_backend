@@ -5,6 +5,7 @@ import type { ErrorRequestHandler } from "express";
 import { env } from "./config/env.js";
 import { pool } from "./config/database.js";
 import authRoutes from "./routes/auth.route.js";
+import adminRoutes from "./routes/admin.route.js";
 
 const app: Express = express();
 
@@ -16,6 +17,7 @@ app.use(
   cors({
     origin: env.CLIENT_URL,
     credentials: true,
+    allowedHeaders: ["Content-Type", "X-CSRF-Token"],
     exposedHeaders: ["X-CSRF-Token"],
   })
 );
@@ -52,6 +54,7 @@ app.get("/api/v1/health/database", async (_req, res) => {
 });
 
 app.use("/api/v1/auth", authRoutes);
+app.use("/api/v1/admin", adminRoutes);
 
 const errorHandler: ErrorRequestHandler = (error, _request, response, _next) => {
   if (typeof error === "object" && error !== null && "type" in error) {
