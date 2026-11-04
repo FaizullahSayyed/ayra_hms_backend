@@ -8,6 +8,13 @@ import adminRoutes from "./routes/admin.route.js";
 
 const app: Express = express();
 
+app.get("/", (_req, res) => {
+  res.status(200).json({
+    success: true,
+    message: "Ayra Hospital API is running",
+  });
+});
+
 // CORS configuration
 app.use(
   cors({
