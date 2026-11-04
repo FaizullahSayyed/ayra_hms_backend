@@ -1,11 +1,12 @@
 import { Pool } from "pg";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { env } from "./env.js";
 
-const caCertificate = readFileSync(
-  "certs/ca.pem",
-  "utf8"
+const caCertificatePath = fileURLToPath(
+  new URL("../../certs/ca.pem", import.meta.url),
 );
+const caCertificate = readFileSync(caCertificatePath, "utf8");
 
 export const pool = new Pool({
   connectionString: env.DATABASE_URL,
