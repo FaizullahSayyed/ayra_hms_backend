@@ -2,6 +2,7 @@ import { Pool } from "pg";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { env } from "./env.js";
+import { removeConnectionStringSslOptions } from "./database-url.js";
 
 const caCertificatePath = fileURLToPath(
   new URL("../../certs/ca.pem", import.meta.url),
@@ -9,7 +10,8 @@ const caCertificatePath = fileURLToPath(
 const caCertificate = readFileSync(caCertificatePath, "utf8");
 
 export const pool = new Pool({
-  connectionString: env.DATABASE_URL,
+  // URL-level SSL options override this CA configuration in node-postgres.
+  connectionString: removeConnectionStringSslOptions(env.DATABASE_URL),
 
   ssl: {
     ca: caCertificate,

@@ -8,11 +8,24 @@ import adminRoutes from "./routes/admin.route.js";
 
 const app: Express = express();
 
-app.get("/", (_req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "Ayra Hospital API is running",
-  });
+app.get("/", async (_req, res) => {
+  try {
+    await pool.query("SELECT 1");
+
+    res.status(200).json({
+      success: true,
+      message: "Ayra Hospital API is running",
+      database: "Database connection is healthy",
+    });
+  } catch (error) {
+    console.error("Root health check failed:", error);
+
+    res.status(503).json({
+      success: false,
+      message: "Ayra Hospital API is running, but the database connection is unavailable",
+      database: "Database connection unavailable",
+    });
+  }
 });
 
 // CORS configuration
