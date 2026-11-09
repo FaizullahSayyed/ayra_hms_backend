@@ -1,19 +1,18 @@
 import "dotenv/config";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import app from "./app.js";
 import { env } from "./config/env.js";
 import { connectDatabase, pool } from "./config/database.js";
 
-const startServer = async (): Promise<void> => {
+export async function startServer(): Promise<void> {
   try {
-    // Connect to PostgreSQL
     await connectDatabase();
 
-    // Start Express server
     const server = app.listen(env.PORT, () => {
       console.log(`Ayra Hospital API running on port ${env.PORT}`);
     });
 
-    // Graceful shutdown
     const shutdown = (signal: string): void => {
       console.log(`${signal} received. Shutting down...`);
 
@@ -31,6 +30,11 @@ const startServer = async (): Promise<void> => {
     await pool.end();
     process.exit(1);
   }
-};
+}
 
-void startServer();
+export default app;
+
+const invokedPath = process.argv[1] ? resolve(process.argv[1]) : "";
+if (invokedPath && invokedPath === fileURLToPath(import.meta.url)) {
+  void startServer();
+}

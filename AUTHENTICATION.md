@@ -20,6 +20,10 @@ For authenticated state-changing requests, send the JWT cookie automatically wit
 
 Set `DATABASE_URL`, `DATABASE_CA_CERT`, `CLIENT_URL`, `JWT_SECRET`, and `NODE_ENV` using deployment secrets/environment settings. `JWT_SECRET` must contain at least 32 characters and must be kept private. Do not commit `.env` or private CA files.
 
+## Vercel deployment
+
+Deploy the backend project with this directory as its Vercel project root. Vercel serves the Express application through `api/index.ts`; that entry exports the app as a serverless function and does not start a persistent listener. The same `src/index.ts` remains the local/Node server entry (`npm start` after building). Configure `DATABASE_URL`, `CLIENT_URL`, `JWT_SECRET`, and `NODE_ENV=production` in Vercel project environment variables. `vercel.json` includes the database CA certificate in the function bundle and rewrites requests to the API function. Apply migrations separately with `npm run db:up` before routing production traffic to a deployment.
+
 Apply the pending database migrations with:
 
 ```powershell
