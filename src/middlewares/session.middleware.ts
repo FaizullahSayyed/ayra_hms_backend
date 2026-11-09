@@ -32,7 +32,11 @@ export function requireTrustedOrigin(
 ): RequestHandler {
   return (request, response, next) => {
     const origin = request.get("origin");
-    if (!origin || !allowedOrigins.includes(origin)) {
+    // Same-origin safe reads may omit Origin; mutations still require an allowlisted Origin.
+    if (
+      (!origin && request.method !== "GET" && request.method !== "HEAD")
+      || (origin && !allowedOrigins.includes(origin))
+    ) {
       response.status(403).json({
         success: false,
         message: "Request origin is not allowed.",

@@ -287,12 +287,17 @@ test("login validates and normalizes untrusted fields", async () => {
 test("login rejects untrusted or missing origins", async () => {
   const handler = createLoginHandlerWith();
   await withAuthServer({ loginHandler: handler }, async (baseUrl) => {
-    const response = await fetch(`${baseUrl}/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Origin: "https://attacker.example" },
-      body: JSON.stringify(loginRequest),
-    });
-    assert.equal(response.status, 403);
+    for (const origin of ["https://attacker.example", undefined]) {
+      const response = await fetch(`${baseUrl}/login`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(origin ? { Origin: origin } : {}),
+        },
+        body: JSON.stringify(loginRequest),
+      });
+      assert.equal(response.status, 403);
+    }
   });
 });
 
@@ -378,7 +383,6 @@ test("current-user endpoint verifies the JWT cookie and returns its CSRF token",
   }, async (baseUrl) => {
     const response = await fetch(`${baseUrl}/me`, {
       headers: {
-        Origin: allowedOrigin,
         Cookie: `${AUTH_COOKIE_NAME}=${generateAccessToken({
           userId: "user-123",
           role: "doctor",
@@ -400,6 +404,18 @@ test("current-user endpoint verifies the JWT cookie and returns its CSRF token",
     assert.match(authenticationSql, /JOIN user_sessions/i);
     assert.match(authenticationSql, /revoked_at IS NULL/i);
     assert.match(authenticationSql, /expires_at > NOW\(\)/i);
+
+    const untrustedOrigin = await fetch(`${baseUrl}/me`, {
+      headers: {
+        Origin: "https://attacker.example",
+        Cookie: `${AUTH_COOKIE_NAME}=${generateAccessToken({
+          userId: "user-123",
+          role: "doctor",
+          csrfToken,
+        })}`,
+      },
+    });
+    assert.equal(untrustedOrigin.status, 403);
   });
 });
 
