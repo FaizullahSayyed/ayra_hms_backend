@@ -5,23 +5,9 @@ import { env } from "../config/env.js";
 import { USER_ROLES, type AuthenticatedUser, type UserRole } from "../types/auth.js";
 import { hashOpaqueValue } from "../services/session.service.js";
 import { verifyAccessToken } from "../utils/jwt.js";
+import { AUTH_COOKIE_NAME, CSRF_HEADER_NAME, readAuthCookie } from "../utils/auth-cookie.js";
 
-export const AUTH_COOKIE_NAME = "ayra_token";
-export const CSRF_HEADER_NAME = "x-csrf-token";
-
-function readCookie(requestCookie: string | undefined, name: string): string | undefined {
-  if (!requestCookie) return undefined;
-
-  const entry = requestCookie.split(";").map((part) => part.trim())
-    .find((part) => part.startsWith(`${name}=`));
-  if (!entry) return undefined;
-
-  try {
-    return decodeURIComponent(entry.slice(name.length + 1));
-  } catch {
-    return undefined;
-  }
-}
+export { AUTH_COOKIE_NAME, CSRF_HEADER_NAME } from "../utils/auth-cookie.js";
 
 interface AuthenticationUserRecord {
   id: string;
@@ -61,7 +47,7 @@ export function requireAuthenticatedUser(
   database: AuthenticationDatabase = authenticationDatabase,
 ): RequestHandler {
   return async (request, response, next): Promise<void> => {
-    const token = readCookie(request.headers.cookie, AUTH_COOKIE_NAME);
+    const token = readAuthCookie(request.headers.cookie);
     if (!token) {
       response.status(401).json({ success: false, message: "Authentication required." });
       return;

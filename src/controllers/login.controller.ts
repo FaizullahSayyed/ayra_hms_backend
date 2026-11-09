@@ -2,12 +2,17 @@ import { randomBytes } from "node:crypto";
 import type { RequestHandler } from "express";
 import { env } from "../config/env.js";
 import { pool } from "../config/database.js";
-import { AUTH_COOKIE_NAME, CSRF_HEADER_NAME } from "../middlewares/session.middleware.js";
 import { USER_ROLES, type UserRole } from "../types/auth.js";
 import { comparePassword, hashPassword } from "../utils/password.js";
 import { generateAccessToken, getAccessTokenExpiration } from "../utils/jwt.js";
 import { loginSchema } from "../validators/auth.validator.js";
 import { sessionService } from "../services/session.service.js";
+import {
+  AUTH_COOKIE_NAME,
+  CSRF_HEADER_NAME,
+  getAuthCookieOptions,
+  type AuthCookieSettings,
+} from "../utils/auth-cookie.js";
 
 interface LoginUser {
   id: string;
@@ -25,21 +30,14 @@ interface LoginDatabase {
   ): Promise<{ rows: LoginUser[] }>;
 }
 
-interface SessionCookieSettings {
-  secure: boolean;
-  sameSite: "lax" | "strict" | "none";
-}
-
 interface LoginHandlerDependencies {
   database: LoginDatabase;
   verifyPassword: typeof comparePassword;
   dummyPasswordHash: Promise<string>;
   generateToken: typeof generateAccessToken;
   recordSession: (userId: string, token: string, csrfToken: string, expiresAt: Date) => Promise<void>;
-  cookieSettings: SessionCookieSettings;
+  cookieSettings: AuthCookieSettings;
 }
-
-const AUTH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 const loginDatabase: LoginDatabase = {
   query: (sql, values) => pool.query<LoginUser>(sql, values),
@@ -124,17 +122,7 @@ export function createLoginHandler(
       });
       operation = "session creation";
       await dependencies.recordSession(user.id, token, csrfToken, getAccessTokenExpiration(token));
-      const cookieAttributes = {
-        secure: dependencies.cookieSettings.secure,
-        sameSite: dependencies.cookieSettings.sameSite,
-        path: "/api/v1",
-        maxAge: AUTH_TOKEN_TTL_MS,
-      } as const;
-
-      response.cookie(AUTH_COOKIE_NAME, token, {
-        ...cookieAttributes,
-        httpOnly: true,
-      });
+      response.cookie(AUTH_COOKIE_NAME, token, getAuthCookieOptions(dependencies.cookieSettings));
       response.setHeader(CSRF_HEADER_NAME, csrfToken);
 
       response.status(200).json({
@@ -170,7 +158,7 @@ export function createLoginHandler(
 }
 
 export function createLogoutHandler(
-  cookieSettings: Pick<SessionCookieSettings, "secure" | "sameSite"> = {
+  cookieSettings: AuthCookieSettings = {
     secure: env.SESSION_COOKIE_SECURE,
     sameSite: env.SESSION_COOKIE_SAME_SITE,
   },
@@ -195,15 +183,7 @@ export function createLogoutHandler(
       return;
     }
 
-    const cookieAttributes = {
-      secure: cookieSettings.secure,
-      sameSite: cookieSettings.sameSite,
-      path: "/api/v1",
-    } as const;
-    response.clearCookie(AUTH_COOKIE_NAME, {
-      ...cookieAttributes,
-      httpOnly: true,
-    });
+    response.clearCookie(AUTH_COOKIE_NAME, getAuthCookieOptions(cookieSettings, true));
     response.status(200).json({ success: true, message: "Signed out successfully." });
   };
 }

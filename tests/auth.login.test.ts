@@ -12,6 +12,7 @@ import {
   CSRF_HEADER_NAME,
   AUTH_COOKIE_NAME,
 } from "../src/middlewares/session.middleware.js";
+import { AUTH_COOKIE_MAX_AGE_MS, AUTH_COOKIE_PATH } from "../src/utils/auth-cookie.js";
 import { createAuthRouter } from "../src/routes/auth.route.js";
 import { generateAccessToken, verifyAccessToken } from "../src/utils/jwt.js";
 import type { UserRole } from "../src/types/auth.js";
@@ -191,8 +192,8 @@ test("login returns safe user data and secure server-managed cookies", async () 
     assert.ok(tokenCookie.includes("HttpOnly"));
     assert.ok(tokenCookie.includes("Secure"));
     assert.ok(tokenCookie.includes("SameSite=None"));
-    assert.ok(tokenCookie.includes("Path=/api/v1"));
-    assert.ok(tokenCookie.includes("Max-Age=2592000"));
+    assert.ok(tokenCookie.includes(`Path=${AUTH_COOKIE_PATH}`));
+    assert.ok(tokenCookie.includes(`Max-Age=${AUTH_COOKIE_MAX_AGE_MS / 1000}`));
     const token = decodeURIComponent(tokenCookie.split(";")[0].split("=")[1]);
     const payload = verifyAccessToken(token);
     assert.equal(payload.userId, "user-123");

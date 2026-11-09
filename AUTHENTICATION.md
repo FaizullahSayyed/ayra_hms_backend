@@ -14,7 +14,7 @@ For authenticated state-changing requests, send the JWT cookie automatically wit
 
 `POST /api/v1/auth/logout` requires an allowed `Origin`, a valid JWT cookie, and the matching CSRF header. It revokes the active database session and clears the cookie, so copied tokens are rejected as well. The cookie path is `/api/v1` so it is sent to both authentication and authorized admin endpoints. The same origin allowlist is used by credentialed CORS; `CLIENT_URL` must be a comma-separated list of exact frontend origins, including `http://localhost:5173` and `https://ayra-hms-frontend.vercel.app` as appropriate.
 
-`SESSION_COOKIE_SAME_SITE` defaults to `lax` in development and `none` in production to support separately deployed frontend and backend sites. `SameSite=none` is accepted only with `NODE_ENV=production`, where Secure cookies are enabled.
+`SESSION_COOKIE_SAME_SITE` defaults to `lax` in development and `none` in production to support separately deployed frontend and backend sites. `SameSite=none` is accepted only with `NODE_ENV=production`, where Secure cookies are enabled. The auth cookie is host-only, HttpOnly, and scoped to `/api/v1`; the server uses the same path and security attributes when clearing it. Browsers must permit the frontend to use cross-site cookies for the separately hosted API.
 
 ## Setup
 
