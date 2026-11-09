@@ -87,7 +87,7 @@ async function postUser(
   if (options.authenticated !== false) {
     headers.Cookie = `${AUTH_COOKIE_NAME}=${generateAccessToken({
       userId: "actor-123",
-      role: "patient",
+      role: "admin",
       csrfToken,
     })}`;
     headers[CSRF_HEADER_NAME] = options.csrf ?? csrfToken;
@@ -146,6 +146,7 @@ test("admin can create a user with normalized safe response and a persisted pass
     });
     assert.equal(passwordToHash, accountRequest.password);
     assert.match(insertedSql, /INSERT INTO users/);
+    assert.match(insertedSql, /INSERT INTO admin_audit_events/);
     assert.equal(insertedValues[0], "mira.shah");
     assert.equal(insertedValues[1], "Mira Shah");
     assert.equal(insertedValues[2], "Mira");
@@ -155,6 +156,17 @@ test("admin can create a user with normalized safe response and a persisted pass
     assert.equal(insertedValues[6], "doctor");
     assert.equal(insertedValues[7], "+1 555 0100");
     assert.equal(insertedValues[8], "female");
+    assert.equal(insertedValues[9], "actor-123");
+    assert.deepEqual(JSON.parse(insertedValues[10] ?? "[]"), [
+      "username",
+      "firstName",
+      "lastName",
+      "email",
+      "role",
+      "phone",
+      "gender",
+      "password",
+    ]);
     assert.equal(insertedValues.includes(accountRequest.password), false);
     assert.equal(JSON.stringify(response.body).includes(accountRequest.password), false);
     assert.equal(JSON.stringify(response.body).includes("password_hash"), false);
@@ -223,10 +235,32 @@ test("admin user validation rejects malformed fields before persistence", async 
   });
 });
 
+test("admin user creation rejects patient and missing roles before persistence", async () => {
+  let databaseCalled = false;
+  const handler = createAdminUserHandler(createDatabase(() => { databaseCalled = true; }), async () => "hash");
+
+  await withAdminEndpoint("admin", handler, async (url) => {
+    const patientRoleResponse = await postUser(url, { ...accountRequest, role: "patient" });
+    assert.equal(patientRoleResponse.status, 400);
+    assert.ok(patientRoleResponse.body.errors?.role);
+
+    const { role: _role, ...missingRoleRequest } = accountRequest;
+    const missingRoleResponse = await postUser(url, missingRoleRequest);
+    assert.equal(missingRoleResponse.status, 400);
+    assert.ok(missingRoleResponse.body.errors?.role);
+    assert.equal(databaseCalled, false);
+  });
+});
+
 test("admin user creation handles uniqueness and database failures without success fallbacks", async () => {
   const duplicateDatabase: UserCreationDatabase = {
     query: async <T>() => {
       throw Object.assign(new Error("unique violation"), { code: "23505" });
+    },
+  };
+  const outdatedSchemaDatabase: UserCreationDatabase = {
+    query: async <T>() => {
+      throw Object.assign(new Error("column does not exist"), { code: "42703" });
     },
   };
   const failedDatabase: UserCreationDatabase = {
@@ -239,6 +273,14 @@ test("admin user creation handles uniqueness and database failures without succe
     const response = await postUser(url, accountRequest);
     assert.equal(response.status, 409);
     assert.equal(response.body.message, "Username or email is already in use.");
+    assert.equal(response.body.user, undefined);
+  });
+  await withAdminEndpoint("admin", createAdminUserHandler(outdatedSchemaDatabase, async () => "hash"), async (url) => {
+    const response = await postUser(url, accountRequest);
+    assert.equal(response.status, 503);
+    assert.equal(response.body.success, false);
+    assert.match(response.body.message, /schema is outdated/);
+    assert.match(response.body.message, /npm run db:up/);
     assert.equal(response.body.user, undefined);
   });
   await withAdminEndpoint("admin", createAdminUserHandler(failedDatabase, async () => "hash"), async (url) => {

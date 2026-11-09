@@ -25,17 +25,27 @@ const userDatabase: UserCreationDatabase = {
 
 export async function createUserRecord(
   input: AdminCreateUserInput,
+  actorUserId: string,
   database: UserCreationDatabase = userDatabase,
   passwordHasher: typeof hashPassword = hashPassword,
 ): Promise<CreatedUser> {
   const passwordHash = await passwordHasher(input.password);
   const name = `${input.firstName} ${input.lastName}`;
   const result = await database.query<CreatedUser>(
-    `INSERT INTO users (
-       username, name, first_name, last_name, email, password_hash, role, phone, gender
+    `WITH created_user AS (
+       INSERT INTO users (
+         username, name, first_name, last_name, email, password_hash, role, phone, gender
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING id, name, email, role
+     ), audit_event AS (
+       INSERT INTO admin_audit_events (
+         actor_user_id, target_user_id, event_type, changed_fields, password_changed
+       )
+       SELECT $10, id, 'staff_created', $11::jsonb, TRUE
+       FROM created_user
      )
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-     RETURNING id, name, email, role`,
+     SELECT id, name, email, role FROM created_user`,
     [
       input.username,
       name,
@@ -46,6 +56,8 @@ export async function createUserRecord(
       input.role,
       input.phone ?? null,
       input.gender,
+      actorUserId,
+      JSON.stringify(["username", "firstName", "lastName", "email", "role", "phone", "gender", "password"]),
     ],
   );
   const user = result.rows[0];

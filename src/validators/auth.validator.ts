@@ -9,7 +9,7 @@ const optionalPhoneSchema = z
   .optional()
   .transform((value) => value || undefined);
 
-export const userAccountSchema = z.object({
+const accountFields = {
   username: z
     .string()
     .trim()
@@ -35,20 +35,43 @@ export const userAccountSchema = z.object({
     .min(1, "Last name is required")
     .max(80, "Last name cannot exceed 80 characters")
     .transform((value) => value.replace(/\s+/g, " ")),
-  password: z
-    .string()
-    .min(8, "Password must contain at least 8 characters")
-    .max(72, "Password is too long"),
   phone: optionalPhoneSchema,
   gender: z.enum(["female", "male", "non-binary", "prefer-not-to-say"]),
-  role: z.enum(USER_ROLES).default("patient"),
-}).strict();
+  role: z.enum(USER_ROLES),
+};
 
-export const registerSchema = userAccountSchema;
-export const adminCreateUserSchema = userAccountSchema;
+export const adminCreateUserSchema = z.object({
+  ...accountFields,
+  password: z
+    .string()
+    .min(12, "Password must contain at least 12 characters")
+    .max(72, "Password is too long"),
+}).strict().refine(
+  ({ firstName, lastName }) => `${firstName} ${lastName}`.length <= 150,
+  { message: "Combined name cannot exceed 150 characters", path: ["lastName"] },
+);
 
-export type RegisterInput = z.infer<typeof registerSchema>;
+export const adminUpdateUserSchema = z.object({
+  ...accountFields,
+  phone: z
+    .string()
+    .trim()
+    .max(32, "Phone number cannot exceed 32 characters")
+    .regex(/^[+0-9().\-\s]*$/, "Phone number contains invalid characters")
+    .optional(),
+  gender: z.enum(["female", "male", "non-binary", "prefer-not-to-say", ""]).optional(),
+  password: z
+    .string()
+    .min(12, "Password must contain at least 12 characters")
+    .max(72, "Password is too long")
+    .optional(),
+}).strict().refine(
+  ({ firstName, lastName }) => `${firstName} ${lastName}`.length <= 150,
+  { message: "Combined name cannot exceed 150 characters", path: ["lastName"] },
+);
+
 export type AdminCreateUserInput = z.infer<typeof adminCreateUserSchema>;
+export type AdminUpdateUserInput = z.infer<typeof adminUpdateUserSchema>;
 
 export const loginSchema = z.object({
   email: z

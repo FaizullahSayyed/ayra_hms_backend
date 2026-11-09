@@ -40,3 +40,13 @@ export const verifyAccessToken = (
     csrfToken: decoded.csrfToken,
   };
 };
+
+export const getAccessTokenExpiration = (token: string): Date => {
+  const decoded = jwt.verify(token, env.JWT_SECRET, {
+    algorithms: ["HS256"],
+  });
+  if (typeof decoded === "string" || typeof decoded.exp !== "number") {
+    throw new Error("Access token has no expiration.");
+  }
+  return new Date(decoded.exp * 1000);
+};

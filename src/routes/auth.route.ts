@@ -1,6 +1,6 @@
 import { Router } from "express";
 import type { RequestHandler } from "express";
-import { registerPatient } from "../controllers/auth.controller.js";
+import { patientRegistrationDeferred } from "../controllers/auth.controller.js";
 import { loginUser, logoutUser } from "../controllers/login.controller.js";
 import { getCurrentUser } from "../controllers/current-user.controller.js";
 import {
@@ -25,7 +25,7 @@ export function createAuthRouter(dependencies: AuthRouterDependencies = {}) {
   const trustedOrigin = requireTrustedOrigin(dependencies.allowedOrigins ?? env.CLIENT_URL);
   const authenticatedUser = requireAuthenticatedUser(dependencies.authenticationDatabase);
 
-  router.post("/register", dependencies.registerHandler ?? registerPatient);
+  router.post("/register", dependencies.registerHandler ?? patientRegistrationDeferred);
   router.post("/login", trustedOrigin, dependencies.loginHandler ?? loginUser);
   router.get(
     "/me",

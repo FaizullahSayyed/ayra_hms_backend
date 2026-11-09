@@ -47,6 +47,7 @@ interface LoginDependencies {
   verifyPassword: (password: string, hash: string) => Promise<boolean>;
   dummyPasswordHash: Promise<string>;
   generateToken: typeof generateAccessToken;
+  recordSession: (userId: string, token: string, csrfToken: string, expiresAt: Date) => Promise<void>;
   cookieSettings: {
     secure: boolean;
     sameSite: "lax" | "strict" | "none";
@@ -69,7 +70,7 @@ function createLoginUser(overrides: Partial<LoginUser> = {}): LoginUser {
     id: "user-123",
     name: "Aanya Patel",
     email: "aanya@example.test",
-    role: "patient",
+    role: "doctor",
     password_hash: "stored-bcrypt-hash",
     is_active: true,
     ...overrides,
@@ -87,6 +88,7 @@ function createLoginHandlerWith(
       password === loginRequest.password && hash === "stored-bcrypt-hash",
     dummyPasswordHash: Promise.resolve("dummy-bcrypt-hash"),
     generateToken: generateAccessToken,
+    recordSession: async () => {},
     cookieSettings: { secure: true, sameSite: "none" },
     ...overrides,
   };
@@ -150,6 +152,7 @@ async function postJson(
 
 test("login returns safe user data and secure server-managed cookies", async () => {
   let queriedEmail = "";
+  let recordedSession: { userId: string; token: string; csrfToken: string; expiresAt: Date } | undefined;
   const handler = createLoginHandlerWith({
     database: {
       query: async (_sql, values) => {
@@ -160,6 +163,9 @@ test("login returns safe user data and secure server-managed cookies", async () 
       },
     },
     verifyPassword: async (_password, hash) => hash === "stored-bcrypt-hash",
+    recordSession: async (userId, token, csrfToken, expiresAt) => {
+      recordedSession = { userId, token, csrfToken, expiresAt };
+    },
   });
 
   await withAuthServer({ loginHandler: handler }, async (baseUrl) => {
@@ -194,8 +200,14 @@ test("login returns safe user data and secure server-managed cookies", async () 
     assert.match(payload.csrfToken, /^[A-Za-z0-9_-]{43}$/);
     assert.equal(response.setCookies.length, 1);
     assert.equal(response.csrfToken, payload.csrfToken);
-    assert.equal(JSON.stringify(response.body).includes(payload.csrfToken), false);
     const tokenParts = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString());
+    assert.deepEqual(recordedSession, {
+      userId: "user-123",
+      token,
+      csrfToken: payload.csrfToken,
+      expiresAt: new Date(tokenParts.exp * 1000),
+    });
+    assert.equal(JSON.stringify(response.body).includes(payload.csrfToken), false);
     assert.equal(tokenParts.exp - tokenParts.iat, 30 * 24 * 60 * 60);
   });
 });
@@ -342,9 +354,12 @@ test("missing authentication tables return a migration setup hint", async () => 
 
 test("current-user endpoint verifies the JWT cookie and returns its CSRF token", async () => {
   const csrfToken = "T".repeat(43);
+  let authenticationSql = "";
   const authenticationDatabase: AuthenticationDatabase = {
     query: async (_sql, values) => {
-      assert.deepEqual(values, ["user-123"]);
+      authenticationSql = _sql;
+      assert.equal(values[0], "user-123");
+      assert.match(values[1], /^[a-f0-9]{64}$/);
       return {
         rows: [{
           id: "user-123",
@@ -365,7 +380,7 @@ test("current-user endpoint verifies the JWT cookie and returns its CSRF token",
         Origin: allowedOrigin,
         Cookie: `${AUTH_COOKIE_NAME}=${generateAccessToken({
           userId: "user-123",
-          role: "patient",
+          role: "doctor",
           csrfToken,
         })}`,
       },
@@ -381,6 +396,9 @@ test("current-user endpoint verifies the JWT cookie and returns its CSRF token",
     });
     assert.equal(response.headers.get(CSRF_HEADER_NAME), csrfToken);
     assert.match(response.headers.get("cache-control") ?? "", /no-store/i);
+    assert.match(authenticationSql, /JOIN user_sessions/i);
+    assert.match(authenticationSql, /revoked_at IS NULL/i);
+    assert.match(authenticationSql, /expires_at > NOW\(\)/i);
   });
 });
 
@@ -418,7 +436,7 @@ test("JWTs for inactive or missing users are rejected", async () => {
         Origin: allowedOrigin,
         Cookie: `${AUTH_COOKIE_NAME}=${generateAccessToken({
           userId: "disabled-user",
-          role: "patient",
+          role: "doctor",
           csrfToken: "C".repeat(43),
         })}`,
       },
@@ -435,17 +453,21 @@ test("logout requires a matching CSRF token and clears the JWT cookie", async ()
         id: "user-123",
         name: "Aanya Patel",
         email: "aanya@example.test",
-        role: "patient",
+        role: "doctor",
       }],
     }),
   };
-  const logoutHandler = createLogoutHandler({ secure: true, sameSite: "none" });
+  let revokedSessionHash = "";
+  const logoutHandler = createLogoutHandler(
+    { secure: true, sameSite: "none" },
+    async (sessionHash) => { revokedSessionHash = sessionHash; },
+  );
   const wrongCsrfToken = "A".repeat(43);
 
   await withAuthServer({ authenticationDatabase, logoutHandler }, async (baseUrl) => {
     const tokenCookie = `${AUTH_COOKIE_NAME}=${generateAccessToken({
       userId: "user-123",
-      role: "patient",
+      role: "doctor",
       csrfToken,
     })}`;
     const denied = await postJson(`${baseUrl}/logout`, {}, {
@@ -459,6 +481,7 @@ test("logout requires a matching CSRF token and clears the JWT cookie", async ()
       [CSRF_HEADER_NAME]: csrfToken,
     });
     assert.equal(accepted.status, 200);
+    assert.match(revokedSessionHash, /^[a-f0-9]{64}$/);
     assert.ok(accepted.setCookies.some((cookie) =>
       cookie.startsWith(`${AUTH_COOKIE_NAME}=`) && cookie.includes("Expires=Thu, 01 Jan 1970")
     ));

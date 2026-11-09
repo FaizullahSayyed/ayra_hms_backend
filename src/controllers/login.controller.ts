@@ -5,8 +5,9 @@ import { pool } from "../config/database.js";
 import { AUTH_COOKIE_NAME, CSRF_HEADER_NAME } from "../middlewares/session.middleware.js";
 import { USER_ROLES, type UserRole } from "../types/auth.js";
 import { comparePassword, hashPassword } from "../utils/password.js";
-import { generateAccessToken } from "../utils/jwt.js";
+import { generateAccessToken, getAccessTokenExpiration } from "../utils/jwt.js";
 import { loginSchema } from "../validators/auth.validator.js";
+import { sessionService } from "../services/session.service.js";
 
 interface LoginUser {
   id: string;
@@ -34,6 +35,7 @@ interface LoginHandlerDependencies {
   verifyPassword: typeof comparePassword;
   dummyPasswordHash: Promise<string>;
   generateToken: typeof generateAccessToken;
+  recordSession: (userId: string, token: string, csrfToken: string, expiresAt: Date) => Promise<void>;
   cookieSettings: SessionCookieSettings;
 }
 
@@ -50,6 +52,8 @@ const defaultDependencies: LoginHandlerDependencies = {
   verifyPassword: comparePassword,
   dummyPasswordHash,
   generateToken: generateAccessToken,
+  recordSession: (userId, token, csrfToken, expiresAt) =>
+    sessionService.recordAccessToken(userId, token, csrfToken, expiresAt),
   cookieSettings: {
     secure: env.SESSION_COOKIE_SECURE,
     sameSite: env.SESSION_COOKIE_SAME_SITE,
@@ -118,6 +122,8 @@ export function createLoginHandler(
         role: user.role,
         csrfToken,
       });
+      operation = "session creation";
+      await dependencies.recordSession(user.id, token, csrfToken, getAccessTokenExpiration(token));
       const cookieAttributes = {
         secure: dependencies.cookieSettings.secure,
         sameSite: dependencies.cookieSettings.sameSite,
@@ -168,11 +174,24 @@ export function createLogoutHandler(
     secure: env.SESSION_COOKIE_SECURE,
     sameSite: env.SESSION_COOKIE_SAME_SITE,
   },
+  revokeSession: (sessionHash: string) => Promise<void> =
+    (sessionHash) => sessionService.revokeHash(sessionHash),
 ): RequestHandler {
-  return (_request, response): void => {
+  return async (_request, response): Promise<void> => {
     const user = response.locals.authenticatedUser;
     if (!user) {
       response.status(401).json({ success: false, message: "Authentication required." });
+      return;
+    }
+
+    try {
+      await revokeSession(user.sessionHash);
+    } catch (error) {
+      console.error("Logout session revocation failed.", error);
+      response.status(503).json({
+        success: false,
+        message: "Unable to sign out right now. Please try again.",
+      });
       return;
     }
 

@@ -29,10 +29,18 @@ export interface SessionDatabase {
 
 export interface SessionService {
   create(userId: string): Promise<SessionCredentials>;
+  recordAccessToken(
+    userId: string,
+    accessToken: string,
+    csrfToken: string,
+    expiresAt: Date,
+  ): Promise<void>;
   authenticate(sessionId: string): Promise<AuthenticatedSession | null>;
   refreshCsrf(sessionId: string): Promise<string | null>;
   validateCsrf(sessionId: string, csrfToken: string): Promise<boolean>;
   revoke(sessionId: string): Promise<void>;
+  revokeHash(sessionHash: string): Promise<void>;
+  revokeAllForUser(userId: string): Promise<void>;
 }
 
 const sessionDatabase: SessionDatabase = {
@@ -61,6 +69,19 @@ export class PostgresSessionService implements SessionService {
     );
 
     return { sessionId, csrfToken };
+  }
+
+  async recordAccessToken(
+    userId: string,
+    accessToken: string,
+    csrfToken: string,
+    expiresAt: Date,
+  ): Promise<void> {
+    await this.database.query(
+      `INSERT INTO user_sessions (session_hash, csrf_token_hash, user_id, expires_at)
+       VALUES ($1, $2, $3, $4::timestamptz)`,
+      [hashOpaqueValue(accessToken), hashOpaqueValue(csrfToken), userId, expiresAt.toISOString()],
+    );
   }
 
   async authenticate(sessionId: string): Promise<AuthenticatedSession | null> {
@@ -106,12 +127,26 @@ export class PostgresSessionService implements SessionService {
   }
 
   async revoke(sessionId: string): Promise<void> {
+    await this.revokeHash(hashOpaqueValue(sessionId));
+  }
+
+  async revokeHash(sessionHash: string): Promise<void> {
     await this.database.query(
       `UPDATE user_sessions
        SET revoked_at = NOW()
        WHERE session_hash = $1
          AND revoked_at IS NULL`,
-      [hashOpaqueValue(sessionId)],
+      [sessionHash],
+    );
+  }
+
+  async revokeAllForUser(userId: string): Promise<void> {
+    await this.database.query(
+      `UPDATE user_sessions
+       SET revoked_at = NOW()
+       WHERE user_id = $1
+         AND revoked_at IS NULL`,
+      [userId],
     );
   }
 }

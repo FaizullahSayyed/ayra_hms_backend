@@ -3,6 +3,7 @@ import type { RequestHandler } from "express";
 import { pool } from "../config/database.js";
 import { env } from "../config/env.js";
 import { USER_ROLES, type AuthenticatedUser, type UserRole } from "../types/auth.js";
+import { hashOpaqueValue } from "../services/session.service.js";
 import { verifyAccessToken } from "../utils/jwt.js";
 
 export const AUTH_COOKIE_NAME = "ayra_token";
@@ -79,9 +80,13 @@ export function requireAuthenticatedUser(
       const result = await database.query(
         `SELECT id, name, email, role
          FROM users
+         JOIN user_sessions ON user_sessions.user_id = users.id
          WHERE id = $1 AND is_active = TRUE
+           AND user_sessions.session_hash = $2
+           AND user_sessions.revoked_at IS NULL
+           AND user_sessions.expires_at > NOW()
          LIMIT 1`,
-        [payload.userId],
+        [payload.userId, hashOpaqueValue(token)],
       );
       user = result.rows[0];
     } catch {
@@ -101,6 +106,7 @@ export function requireAuthenticatedUser(
     const authenticatedUser: AuthenticatedUser = {
       ...user,
       csrfToken: payload.csrfToken,
+      sessionHash: hashOpaqueValue(token),
     };
     response.locals.authenticatedUser = authenticatedUser;
     next();

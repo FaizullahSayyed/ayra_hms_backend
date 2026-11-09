@@ -1,5 +1,4 @@
 export const USER_ROLES = [
-  "patient",
   "biller",
   "receptionist",
   "nurse",
@@ -15,4 +14,5 @@ export interface AuthenticatedUser {
   email: string;
   role: UserRole;
   csrfToken: string;
+  sessionHash: string;
 }
